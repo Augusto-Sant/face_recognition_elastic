@@ -1,0 +1,9 @@
+fastapi
+elasticsearch==8.11.1
+deepface
+pillow
+requests
+python-multipart
+opencv-python
+uvicorn
+tf-keras
