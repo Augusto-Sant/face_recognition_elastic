@@ -9,6 +9,14 @@ services:
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
     ports:
       - "9200:9200"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"        # max 2 cores
+          memory: 2g         # max 2 GB RAM
+        reservations:
+          cpus: "1.0"
+          memory: 1g
     networks:
       - face_network
 
@@ -22,6 +30,14 @@ services:
     environment:
       - ELASTICSEARCH_HOST=elasticsearch
       - ELASTICSEARCH_PORT=9200
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1.5g
+        reservations:
+          cpus: "0.5"
+          memory: 512m
     networks:
       - face_network
 
