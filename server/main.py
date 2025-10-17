@@ -199,6 +199,8 @@ async def recognize_face(file: UploadFile = File(...)) -> ResponseRecognizeFace:
                     "timestamp": hit["_source"]["timestamp"],
                 }
             )
+        if len(matches) == 0:
+            raise HTTPException(status_code=404, detail=f"Reconheceu Ninguem: {str(e)}")
 
         return ResponseRecognizeFace(
             status_code=200,
