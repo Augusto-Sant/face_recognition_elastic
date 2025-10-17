@@ -25,7 +25,7 @@ ES_INDEX = "face_embeddings"
 
 try:
     es = Elasticsearch([f"http://{ES_HOST}:{ES_PORT}"])
-    logger.info(f"✅ Connected to Elasticsearch at {ES_HOST}:{ES_PORT}")
+    logger.info(f"Connected to Elasticsearch at {ES_HOST}:{ES_PORT}")
 except Exception as e:
     logger.error(f"❌ Failed to connect to Elasticsearch: {e}")
     raise e
@@ -53,10 +53,10 @@ def create_index():
     }
     try:
         if es.indices.exists(index=ES_INDEX):
-            logger.info(f"ℹ️ Index '{ES_INDEX}' already exists")
+            logger.info(f"Index '{ES_INDEX}' already exists")
             return
         es.indices.create(index=ES_INDEX, body=mapping)
-        logger.info(f"✅ Created index: {ES_INDEX}")
+        logger.info(f"Created index: {ES_INDEX}")
     except Exception as e:
         logger.error(f"❌ Failed to create index '{ES_INDEX}': {e}")
         raise e
@@ -71,7 +71,7 @@ async def startup_event():
     for attempt in range(1, max_retries + 1):
         try:
             if es.ping():
-                logger.info(f"✅ [STARTUP] Elasticsearch is up on attempt {attempt}")
+                logger.info(f"[STARTUP] Elasticsearch is up on attempt {attempt}")
                 create_index()
                 return
             else:
@@ -92,7 +92,6 @@ def image_to_array(image_file):
 
 
 def get_face_embedding(image_array):
-    start = time.time()
     try:
         embedding_objs = DeepFace.represent(
             img_path=image_array,
@@ -102,8 +101,6 @@ def get_face_embedding(image_array):
         )
         if not embedding_objs:
             raise ValueError("No face detected in the image")
-        elapsed = time.time() - start
-        logger.info(f"🧠 Face embedding generated in {elapsed:.2f}s")
         return embedding_objs[0]["embedding"]
     except Exception as e:
         logger.error(f"❌ Face embedding failed: {e}")
@@ -131,7 +128,6 @@ async def store_face(
         t0 = time.time()
         image_bytes = await file.read()
         image_array = image_to_array(image_bytes)
-        logger.info(f"🖼️ Image processed in {time.time() - t0:.2f}s")
 
         embedding = get_face_embedding(image_array)
 
@@ -143,10 +139,9 @@ async def store_face(
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         response = es.index(index=ES_INDEX, document=doc)
-        logger.info(f"💾 Stored in Elasticsearch in {time.time() - t1:.2f}s")
 
         total_time = time.time() - start_total
-        logger.info(f"✅ Face stored successfully in {total_time:.2f}s")
+        logger.info(f"Face stored successfully in {total_time:.2f}s")
 
         return ResponseStoreFace(
             message="Face stored successfully",
@@ -168,17 +163,13 @@ class ResponseRecognizeFace(BaseModel):
 @app.post("/recognize")
 async def recognize_face(file: UploadFile = File(...)) -> ResponseRecognizeFace:
     start_total = time.time()
-    logger.info("🔍 Received request for face recognition")
 
     try:
-        t0 = time.time()
         image_bytes = await file.read()
         image_array = image_to_array(image_bytes)
-        logger.info(f"🖼️ Image read in {time.time() - t0:.2f}s")
 
         embedding = get_face_embedding(image_array)
 
-        t1 = time.time()
         knn_query = {
             "knn": {
                 "field": "embedding",
@@ -190,7 +181,6 @@ async def recognize_face(file: UploadFile = File(...)) -> ResponseRecognizeFace:
         }
 
         response = es.search(index=ES_INDEX, body=knn_query)
-        logger.info(f"🔎 KNN search completed in {time.time() - t1:.2f}s")
 
         if not response["hits"]["hits"]:
             logger.info("⚠️ No matching face found")
@@ -217,7 +207,7 @@ async def recognize_face(file: UploadFile = File(...)) -> ResponseRecognizeFace:
 
         total_time = time.time() - start_total
         logger.info(
-            f"✅ Recognition completed in {total_time:.2f}s — best match: {matches[0]['name']} ({matches[0]['similarity_score']:.2f})"
+            f"Recognition completed in {total_time:.2f}s — best match: {matches[0]['name']} ({matches[0]['similarity_score']:.2f})"
         )
 
         return ResponseRecognizeFace(
