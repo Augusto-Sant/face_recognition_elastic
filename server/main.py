@@ -78,8 +78,9 @@ async def startup_event():
                 logger.warning(f"⚠️ [STARTUP] Elasticsearch not ready (attempt {attempt}/{max_retries})")
         except Exception as e:
             logger.warning(f"⚠️ [STARTUP] Connection failed (attempt {attempt}/{max_retries}): {e}")
+        
+        time.sleep(retry_delay)
 
-        await asyncio.sleep(retry_delay)
 
     logger.error("❌ [STARTUP] Elasticsearch did not become ready in time. Exiting.")
     raise RuntimeError("Elasticsearch failed to start within expected time")
