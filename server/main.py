@@ -64,8 +64,25 @@ def create_index():
 
 @app.on_event("startup")
 async def startup_event():
-    time.sleep(5)
-    create_index()
+    """Wait for Elasticsearch to be ready and create index"""
+    max_retries = 30
+    retry_delay = 5  # segundos entre tentativas
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            if es.ping():
+                logger.info(f"✅ [STARTUP] Elasticsearch is up on attempt {attempt}")
+                create_index()
+                return
+            else:
+                logger.warning(f"⚠️ [STARTUP] Elasticsearch not ready (attempt {attempt}/{max_retries})")
+        except Exception as e:
+            logger.warning(f"⚠️ [STARTUP] Connection failed (attempt {attempt}/{max_retries}): {e}")
+
+        await asyncio.sleep(retry_delay)
+
+    logger.error("❌ [STARTUP] Elasticsearch did not become ready in time. Exiting.")
+    raise RuntimeError("Elasticsearch failed to start within expected time")
 
 
 def image_to_array(image_file):
