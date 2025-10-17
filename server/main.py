@@ -27,7 +27,8 @@ except Exception as e:
     raise Exception(f"nao conseguiu conectar com elastic aqui {e}")
 
 # Model configuration
-MODEL_NAME = "VGG-Face"
+MODEL_NAME = "Facenet"
+MODEL_DIMENSIONS = 128
 DETECTOR_BACKEND = "opencv"
 
 
@@ -40,7 +41,7 @@ def create_index():
                 "name": {"type": "text"},
                 "embedding": {
                     "type": "dense_vector",
-                    "dims": 4096,
+                    "dims": MODEL_DIMENSIONS,
                     "index": True,
                     "similarity": "cosine",
                 },
@@ -49,16 +50,19 @@ def create_index():
         }
     }
     try:
+        if es.indices.exists(index=ES_INDEX):
+            print(f"Index already exists: {ES_INDEX}")
+            return
         es.indices.create(index=ES_INDEX, body=mapping)
+        print(f"Created index: {ES_INDEX}")
     except Exception as e:
-        raise Exception(f"nao conseguiu criar elastic index {e}")
-    print(f"Created index: {ES_INDEX}")
+        raise Exception(f"nao conseguiu criar elastic index: {e}")
 
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize Elasticsearch connection and create index"""
-    time.sleep(10)
+    time.sleep(30)
     create_index()
 
 
