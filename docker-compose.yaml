@@ -9,6 +9,8 @@ services:
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
     ports:
       - "9200:9200"
+    volumes:
+      - elastic_base_rostos:/usr/share/elasticsearch/data
     networks:
       - face_network
 
@@ -22,8 +24,13 @@ services:
     environment:
       - ELASTICSEARCH_HOST=elasticsearch
       - ELASTICSEARCH_PORT=9200
+    depends_on:
+      - elasticsearch
     networks:
       - face_network
+
+volumes:
+  elastic_base_rostos:
 
 networks:
   face_network:
