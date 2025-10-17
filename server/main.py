@@ -1,39 +1,41 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
-from fastapi.responses import JSONResponse
 from elasticsearch import Elasticsearch
 from deepface import DeepFace
 import numpy as np
 import os
 import io
 from PIL import Image
-import base64
 import time
 from pydantic import BaseModel
 import logging
 
-logger = logging.getLogger("uvicorn")
+# setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("face_api")
 
 app = FastAPI(title="Face Recognition API")
 
-# Elasticsearch configuration
 ES_HOST = os.getenv("ELASTICSEARCH_HOST", "container_elastic")
 ES_PORT = os.getenv("ELASTICSEARCH_PORT", "9200")
 ES_INDEX = "face_embeddings"
 
-# Initialize Elasticsearch client
 try:
     es = Elasticsearch([f"http://{ES_HOST}:{ES_PORT}"])
+    logger.info(f"✅ Connected to Elasticsearch at {ES_HOST}:{ES_PORT}")
 except Exception as e:
-    raise Exception(f"nao conseguiu conectar com elastic aqui {e}")
+    logger.error(f"❌ Failed to connect to Elasticsearch: {e}")
+    raise e
 
-# Model configuration
 MODEL_NAME = "Facenet"
 MODEL_DIMENSIONS = 128
 DETECTOR_BACKEND = "opencv"
 
 
 def create_index():
-    """Create Elasticsearch index with proper mapping for KNN search"""
     mapping = {
         "mappings": {
             "properties": {
@@ -51,29 +53,28 @@ def create_index():
     }
     try:
         if es.indices.exists(index=ES_INDEX):
-            print(f"Index already exists: {ES_INDEX}")
+            logger.info(f"ℹ️ Index '{ES_INDEX}' already exists")
             return
         es.indices.create(index=ES_INDEX, body=mapping)
-        print(f"Created index: {ES_INDEX}")
+        logger.info(f"✅ Created index: {ES_INDEX}")
     except Exception as e:
-        raise Exception(f"nao conseguiu criar elastic index: {e}")
+        logger.error(f"❌ Failed to create index '{ES_INDEX}': {e}")
+        raise e
 
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize Elasticsearch connection and create index"""
-    time.sleep(30)
+    time.sleep(5)
     create_index()
 
 
 def image_to_array(image_file):
-    """Convert uploaded image to numpy array"""
     image = Image.open(io.BytesIO(image_file))
     return np.array(image)
 
 
 def get_face_embedding(image_array):
-    """Extract face embedding using DeepFace"""
+    start = time.time()
     try:
         embedding_objs = DeepFace.represent(
             img_path=image_array,
@@ -81,14 +82,13 @@ def get_face_embedding(image_array):
             detector_backend=DETECTOR_BACKEND,
             enforce_detection=True,
         )
-
         if not embedding_objs:
             raise ValueError("No face detected in the image")
-
-        # Return the first face embedding
+        elapsed = time.time() - start
+        logger.info(f"🧠 Face embedding generated in {elapsed:.2f}s")
         return embedding_objs[0]["embedding"]
-
     except Exception as e:
+        logger.error(f"❌ Face embedding failed: {e}")
         raise HTTPException(status_code=400, detail=f"Face detection failed: {str(e)}")
 
 
@@ -103,27 +103,21 @@ class ResponseStoreFace(BaseModel):
 async def store_face(
     file: UploadFile = File(...), person_id: str = Form(...), name: str = Form(...)
 ) -> ResponseStoreFace:
-    """
-    Store a face embedding in Elasticsearch
+    start_total = time.time()
+    logger.info(f"📥 Received request to store face: {person_id} ({name})")
 
-    Args:
-        file: Image file containing a face
-        person_id: Unique identifier for the person
-        name: Name of the person
-    """
-    logger.info(f"Storing face for {person_id} with name {name}")
     if not person_id or not name:
         raise HTTPException(status_code=400, detail="person_id and name are required")
 
     try:
-        # Read image
+        t0 = time.time()
         image_bytes = await file.read()
         image_array = image_to_array(image_bytes)
+        logger.info(f"🖼️ Image processed in {time.time() - t0:.2f}s")
 
-        # Get face embedding
         embedding = get_face_embedding(image_array)
 
-        # Store in Elasticsearch
+        t1 = time.time()
         doc = {
             "person_id": person_id,
             "name": name,
@@ -131,17 +125,19 @@ async def store_face(
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         response = es.index(index=ES_INDEX, document=doc)
+        logger.info(f"💾 Stored in Elasticsearch in {time.time() - t1:.2f}s")
+
+        total_time = time.time() - start_total
+        logger.info(f"✅ Face stored successfully in {total_time:.2f}s")
 
         return ResponseStoreFace(
-            status_code=200,
             message="Face stored successfully",
             person_id=person_id,
             name=name,
             es_id=response["_id"],
         )
-    except HTTPException as he:
-        raise he
     except Exception as e:
+        logger.error(f"❌ Error storing face: {e}")
         raise HTTPException(status_code=500, detail=f"Error storing face: {str(e)}")
 
 
@@ -153,85 +149,79 @@ class ResponseRecognizeFace(BaseModel):
 
 @app.post("/recognize")
 async def recognize_face(file: UploadFile = File(...)) -> ResponseRecognizeFace:
-    """
-    Recognize a face by finding the most similar embedding using KNN search
+    start_total = time.time()
+    logger.info("🔍 Received request for face recognition")
 
-    Args:
-        file: Image file containing a face to recognize
-    """
     try:
-        # Read image
+        t0 = time.time()
         image_bytes = await file.read()
         image_array = image_to_array(image_bytes)
+        logger.info(f"🖼️ Image read in {time.time() - t0:.2f}s")
 
-        # Get face embedding
         embedding = get_face_embedding(image_array)
 
-        # Perform KNN search in Elasticsearch
+        t1 = time.time()
         knn_query = {
             "knn": {
                 "field": "embedding",
                 "query_vector": embedding,
-                "k": 5,  # Return top 5 matches
+                "k": 5,
                 "num_candidates": 100,
             },
             "_source": ["person_id", "name", "timestamp"],
         }
 
         response = es.search(index=ES_INDEX, body=knn_query)
+        logger.info(f"🔎 KNN search completed in {time.time() - t1:.2f}s")
 
         if not response["hits"]["hits"]:
+            logger.info("⚠️ No matching face found")
             return ResponseRecognizeFace(
-                status_code=200,
                 message="No matching face found",
                 best_match={},
                 all_matches=[],
             )
 
-        # Format results
-        matches = []
-        for hit in response["hits"]["hits"]:
-            if hit["_score"] < 0.70:
-                continue
+        matches = [
+            {
+                "person_id": hit["_source"]["person_id"],
+                "name": hit["_source"]["name"],
+                "similarity_score": hit["_score"],
+                "timestamp": hit["_source"]["timestamp"],
+            }
+            for hit in response["hits"]["hits"]
+            if hit["_score"] >= 0.70
+        ]
 
-            matches.append(
-                {
-                    "person_id": hit["_source"]["person_id"],
-                    "name": hit["_source"]["name"],
-                    "similarity_score": hit["_score"],
-                    "timestamp": hit["_source"]["timestamp"],
-                }
-            )
+        if not matches:
+            logger.warning("⚠️ Matches found but all below threshold (0.70)")
+            raise HTTPException(status_code=404, detail="No strong match found")
 
-        if len(matches) == 0:
-            raise HTTPException(status_code=404, detail=f"Reconheceu Ninguem: {str(e)}")
+        total_time = time.time() - start_total
+        logger.info(
+            f"✅ Recognition completed in {total_time:.2f}s — best match: {matches[0]['name']} ({matches[0]['similarity_score']:.2f})"
+        )
 
         return ResponseRecognizeFace(
-            status_code=200,
             message="Face recognition completed",
             best_match=matches[0],
             all_matches=matches,
         )
 
-    except HTTPException as he:
-        raise he
     except Exception as e:
+        logger.error(f"❌ Error recognizing face: {e}")
         raise HTTPException(status_code=500, detail=f"Error recognizing face: {str(e)}")
 
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
     es_status = es.ping()
-    return {
-        "status": "healthy",
-        "elasticsearch": "connected" if es_status else "disconnected",
-    }
+    logger.info(f"💓 Health check — Elasticsearch: {'OK' if es_status else 'DOWN'}")
+    return {"status": "healthy", "elasticsearch": "connected" if es_status else "disconnected"}
 
 
 @app.get("/")
 async def root():
-    """Root endpoint"""
     return {
         "message": "Face Recognition API",
         "endpoints": {
