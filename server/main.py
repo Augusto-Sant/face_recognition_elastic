@@ -101,9 +101,7 @@ class ResponseStoreFace(BaseModel):
 
 @app.post("/store")
 async def store_face(
-    file: UploadFile = File(...),
-    person_id: str = Form(...),
-    name: str = Form(...)
+    file: UploadFile = File(...), person_id: str = Form(...), name: str = Form(...)
 ) -> ResponseStoreFace:
     """
     Store a face embedding in Elasticsearch
