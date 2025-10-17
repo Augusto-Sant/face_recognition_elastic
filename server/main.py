@@ -191,6 +191,9 @@ async def recognize_face(file: UploadFile = File(...)) -> ResponseRecognizeFace:
         # Format results
         matches = []
         for hit in response["hits"]["hits"]:
+            if hit["_score"] < 0.70:
+                continue
+
             matches.append(
                 {
                     "person_id": hit["_source"]["person_id"],
@@ -199,6 +202,7 @@ async def recognize_face(file: UploadFile = File(...)) -> ResponseRecognizeFace:
                     "timestamp": hit["_source"]["timestamp"],
                 }
             )
+
         if len(matches) == 0:
             raise HTTPException(status_code=404, detail=f"Reconheceu Ninguem: {str(e)}")
 
