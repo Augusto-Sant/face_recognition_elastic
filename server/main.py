@@ -1,5 +1,4 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
-from elasticsearch import Elasticsearch
 from deepface import DeepFace
 import numpy as np
 import os
@@ -7,60 +6,13 @@ import io
 from PIL import Image
 import time
 from pydantic import BaseModel
-import logging
-
-# setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger("face_api")
+import config
+import elastic_utils
+from config import logger
 
 app = FastAPI(title="Face Recognition API")
 
-ES_HOST = os.getenv("ELASTICSEARCH_HOST", "container_elastic")
-ES_PORT = os.getenv("ELASTICSEARCH_PORT", "9200")
-ES_INDEX = "face_embeddings"
-
-try:
-    es = Elasticsearch([f"http://{ES_HOST}:{ES_PORT}"])
-    logger.info(f"Connected to Elasticsearch at {ES_HOST}:{ES_PORT}")
-except Exception as e:
-    logger.error(f"❌ Failed to connect to Elasticsearch: {e}")
-    raise e
-
-MODEL_NAME = "Facenet"
-MODEL_DIMENSIONS = 128
-DETECTOR_BACKEND = "opencv"
-
-
-def create_index():
-    mapping = {
-        "mappings": {
-            "properties": {
-                "person_id": {"type": "keyword"},
-                "name": {"type": "text"},
-                "embedding": {
-                    "type": "dense_vector",
-                    "dims": MODEL_DIMENSIONS,
-                    "index": True,
-                    "similarity": "cosine",
-                },
-                "timestamp": {"type": "date"},
-            }
-        }
-    }
-    try:
-        if es.indices.exists(index=ES_INDEX):
-            logger.info(f"Index '{ES_INDEX}' already exists")
-            return
-        es.indices.create(index=ES_INDEX, body=mapping)
-        logger.info(f"Created index: {ES_INDEX}")
-    except Exception as e:
-        logger.error(f"❌ Failed to create index '{ES_INDEX}': {e}")
-        raise e
-
+es = elastic_utils.get_elastic_client()
 
 @app.on_event("startup")
 async def startup_event():
@@ -71,18 +23,21 @@ async def startup_event():
     for attempt in range(1, max_retries + 1):
         try:
             if es.ping():
-                logger.info(f"[STARTUP] Elasticsearch is up on attempt {attempt}")
-                create_index()
+                logger.info(f"STARTUP | Elasticsearch is up on attempt {attempt}")
+                elastic_utils.create_index()
                 return
             else:
-                logger.warning(f"⚠️ [STARTUP] Elasticsearch not ready (attempt {attempt}/{max_retries})")
+                logger.warning(
+                    f"STARTUP | Elasticsearch not ready (attempt {attempt}/{max_retries})"
+                )
         except Exception as e:
-            logger.warning(f"⚠️ [STARTUP] Connection failed (attempt {attempt}/{max_retries}): {e}")
-        
+            logger.warning(
+                f"STARTUP | Connection failed (attempt {attempt}/{max_retries}): {e}"
+            )
+
         time.sleep(retry_delay)
 
-
-    logger.error("❌ [STARTUP] Elasticsearch did not become ready in time. Exiting.")
+    logger.error("STARTUP | Elasticsearch did not become ready in time. Exiting.")
     raise RuntimeError("Elasticsearch failed to start within expected time")
 
 
@@ -95,15 +50,15 @@ def get_face_embedding(image_array):
     try:
         embedding_objs = DeepFace.represent(
             img_path=image_array,
-            model_name=MODEL_NAME,
-            detector_backend=DETECTOR_BACKEND,
+            model_name=config.MODEL_NAME,
+            detector_backend=config.DETECTOR_BACKEND,
             enforce_detection=True,
         )
         if not embedding_objs:
             raise ValueError("No face detected in the image")
         return embedding_objs[0]["embedding"]
     except Exception as e:
-        logger.error(f"❌ Face embedding failed: {e}")
+        logger.error(f"Face embedding failed: {e}")
         raise HTTPException(status_code=400, detail=f"Face detection failed: {str(e)}")
 
 
@@ -119,10 +74,12 @@ async def store_face(
     file: UploadFile = File(...), person_id: str = Form(...), name: str = Form(...)
 ) -> ResponseStoreFace:
     start_total = time.time()
-    logger.info(f"📥 Received request to store face: {person_id} ({name})")
+    logger.info(f"/store | Received request to store face: {person_id} ({name})")
 
     if not person_id or not name:
-        raise HTTPException(status_code=400, detail="person_id and name are required")
+        raise HTTPException(
+            status_code=400, detail="/store | person_id and name are required"
+        )
 
     try:
         t0 = time.time()
@@ -138,10 +95,10 @@ async def store_face(
             "embedding": embedding,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
-        response = es.index(index=ES_INDEX, document=doc)
+        response = es.index(index=config.ES_INDEX, document=doc)
 
         total_time = time.time() - start_total
-        logger.info(f"Face stored successfully in {total_time:.2f}s")
+        logger.info(f"/store | Face stored successfully in {total_time:.2f}s")
 
         return ResponseStoreFace(
             message="Face stored successfully",
@@ -150,8 +107,10 @@ async def store_face(
             es_id=response["_id"],
         )
     except Exception as e:
-        logger.error(f"❌ Error storing face: {e}")
-        raise HTTPException(status_code=500, detail=f"Error storing face: {str(e)}")
+        logger.error(f"/store | Error storing face: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"/store | Error storing face: {str(e)}"
+        )
 
 
 class ResponseRecognizeFace(BaseModel):
@@ -180,10 +139,10 @@ async def recognize_face(file: UploadFile = File(...)) -> ResponseRecognizeFace:
             "_source": ["person_id", "name", "timestamp"],
         }
 
-        response = es.search(index=ES_INDEX, body=knn_query)
+        response = es.search(index=config.ES_INDEX, body=knn_query)
 
         if not response["hits"]["hits"]:
-            logger.info("⚠️ No matching face found")
+            logger.info("/recognize | No matching face found")
             return ResponseRecognizeFace(
                 message="No matching face found",
                 best_match={},
@@ -202,30 +161,35 @@ async def recognize_face(file: UploadFile = File(...)) -> ResponseRecognizeFace:
         ]
 
         if not matches:
-            logger.warning("⚠️ Matches found but all below threshold (0.70)")
-            raise HTTPException(status_code=404, detail="No strong match found")
+            logger.warning("/recognize | Matches found but all below threshold (0.70)")
+            raise HTTPException(
+                status_code=404, detail="/recognize | No strong match found"
+            )
 
         total_time = time.time() - start_total
         logger.info(
-            f"Recognition completed in {total_time:.2f}s — best match: {matches[0]['name']} ({matches[0]['similarity_score']:.2f})"
+            f"/recognize | Recognition completed in {total_time:.2f}s — best match: {matches[0]['name']} ({matches[0]['similarity_score']:.2f})"
         )
 
         return ResponseRecognizeFace(
-            message="Face recognition completed",
+            message="/recognize | Face recognition completed",
             best_match=matches[0],
             all_matches=matches,
         )
 
     except Exception as e:
-        logger.error(f"❌ Error recognizing face: {e}")
+        logger.error(f"/recognize | Error recognizing face: {e}")
         raise HTTPException(status_code=500, detail=f"Error recognizing face: {str(e)}")
 
 
 @app.get("/health")
 async def health_check():
     es_status = es.ping()
-    logger.info(f"💓 Health check — Elasticsearch: {'OK' if es_status else 'DOWN'}")
-    return {"status": "healthy", "elasticsearch": "connected" if es_status else "disconnected"}
+    logger.info(f"Health check — Elasticsearch: {'OK' if es_status else 'DOWN'}")
+    return {
+        "status": "healthy",
+        "elasticsearch": "connected" if es_status else "disconnected",
+    }
 
 
 @app.get("/")
