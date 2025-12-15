@@ -5,14 +5,15 @@ import os
 import io
 from PIL import Image
 import time
-from pydantic import BaseModel
 import config
 import elastic_utils
 from config import logger
+from dtos import ResponseStoreFace, ResponseRecognizeFace
 
 app = FastAPI(title="Face Recognition API")
 
 es = elastic_utils.get_elastic_client()
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -62,13 +63,6 @@ def get_face_embedding(image_array):
         raise HTTPException(status_code=400, detail=f"Face detection failed: {str(e)}")
 
 
-class ResponseStoreFace(BaseModel):
-    message: str
-    person_id: str
-    name: str
-    es_id: str
-
-
 @app.post("/store")
 async def store_face(
     file: UploadFile = File(...), person_id: str = Form(...), name: str = Form(...)
@@ -111,12 +105,6 @@ async def store_face(
         raise HTTPException(
             status_code=500, detail=f"/store | Error storing face: {str(e)}"
         )
-
-
-class ResponseRecognizeFace(BaseModel):
-    message: str
-    best_match: dict
-    all_matches: list
 
 
 @app.post("/recognize")
