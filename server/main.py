@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Query
 from deepface import DeepFace
 import numpy as np
 import os
@@ -170,6 +170,53 @@ async def recognize_face(file: UploadFile = File(...)) -> ResponseRecognizeFace:
         raise HTTPException(status_code=500, detail=f"Error recognizing face: {str(e)}")
 
 
+@app.get("/faces")
+async def list_faces(
+    page: int = Query(1, ge=1, description="Page number"),
+    size: int = Query(10, ge=1, le=100, description="Results per page"),
+):
+    """List all stored faces with pagination"""
+    try:
+        from_index = (page - 1) * size
+
+        query = {
+            "query": {"match_all": {}},
+            "from": from_index,
+            "size": size,
+            "sort": [{"timestamp": {"order": "desc"}}],
+            "_source": ["person_id", "name", "timestamp"],
+        }
+
+        response = es.search(index=config.ES_INDEX, body=query)
+
+        # Get total count
+        total_count = response["hits"]["total"]["value"]
+
+        faces = [
+            {
+                "id": hit["_id"],
+                "person_id": hit["_source"]["person_id"],
+                "name": hit["_source"]["name"],
+                "created_at": hit["_source"]["timestamp"],
+            }
+            for hit in response["hits"]["hits"]
+        ]
+
+        logger.info(
+            f"/faces | Retrieved {len(faces)} faces (page {page}, total: {total_count})"
+        )
+        return {
+            "total": total_count,
+            "page": page,
+            "size": size,
+            "total_pages": (total_count + size - 1) // size,
+            "faces": faces,
+        }
+    except Exception as e:
+        logger.error(f"/faces | Error listing faces: {e}")
+        raise HTTPException(status_code=500, detail=f"Error listing faces: {str(e)}")
+
+
 @app.get("/health")
 async def health_check():
     es_status = es.ping()
@@ -187,6 +234,7 @@ async def root():
         "endpoints": {
             "/store": "POST - Store a face embedding",
             "/recognize": "POST - Recognize a face",
+            "/faces": "GET - List all stored faces (with pagination)",
             "/health": "GET - Health check",
         },
     }
