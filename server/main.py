@@ -1,7 +1,8 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Query
 from deepface import DeepFace
 import numpy as np
-import os
+from typing import Dict, Any, List
+from numpy.typing import NDArray
 import io
 from PIL import Image
 import time
@@ -42,12 +43,33 @@ async def startup_event():
     raise RuntimeError("Elasticsearch failed to start within expected time")
 
 
-def image_to_array(image_file):
+def image_to_array(image_file: bytes) -> NDArray[np.uint8]:
+    """
+    Converte bytes de imagem em array NumPy.
+
+    Args:
+        image_file: Bytes da imagem
+
+    Returns:
+        numpy.ndarray: Array representando a imagem
+    """
     image = Image.open(io.BytesIO(image_file))
     return np.array(image)
 
 
-def get_face_embedding(image_array):
+def get_face_embedding(image_array: NDArray[np.uint8]) -> List[float]:
+    """
+    Extrai o embedding facial de uma imagem usando DeepFace.
+
+    Args:
+        image_array: Array da imagem
+
+    Returns:
+        list: Vetor de embedding facial (representação numérica da face)
+
+    Raises:
+        HTTPException: Se nenhuma face for detectada ou houver erro no processamento
+    """
     try:
         embedding_objs = DeepFace.represent(
             img_path=image_array,
@@ -67,6 +89,20 @@ def get_face_embedding(image_array):
 async def store_face(
     file: UploadFile = File(...), person_id: str = Form(...), name: str = Form(...)
 ) -> ResponseStoreFace:
+    """
+    Armazena uma face no banco de dados Elasticsearch.
+
+    Args:
+        file: Imagem contendo a face
+        person_id: Identificador único da pessoa
+        name: Nome da pessoa
+
+    Returns:
+        ResponseStoreFace: Confirmação com ID da pessoa, nome e ID do documento no ES
+
+    Raises:
+        HTTPException: Se person_id/name forem vazios ou houver erro no processamento
+    """
     start_total = time.time()
     logger.info(f"/store | Received request to store face: {person_id} ({name})")
 
@@ -76,13 +112,11 @@ async def store_face(
         )
 
     try:
-        t0 = time.time()
         image_bytes = await file.read()
         image_array = image_to_array(image_bytes)
 
         embedding = get_face_embedding(image_array)
 
-        t1 = time.time()
         doc = {
             "person_id": person_id,
             "name": name,
@@ -109,6 +143,19 @@ async def store_face(
 
 @app.post("/recognize")
 async def recognize_face(file: UploadFile = File(...)) -> ResponseRecognizeFace:
+    """
+    Reconhece uma face comparando com faces armazenadas no banco.
+
+    Args:
+        file: Imagem contendo a face a ser reconhecida
+
+    Returns:
+        ResponseRecognizeFace: Melhor correspondência e lista de todas as correspondências
+                               com score >= 0.70
+
+    Raises:
+        HTTPException: Se não houver correspondência forte (score >= 0.70) ou erro no processamento
+    """
     start_total = time.time()
 
     try:
@@ -174,7 +221,26 @@ async def recognize_face(file: UploadFile = File(...)) -> ResponseRecognizeFace:
 async def list_faces(
     page: int = Query(1, ge=1, description="Page number"),
     size: int = Query(10, ge=1, le=100, description="Results per page"),
-):
+) -> Dict[str, Any]:
+    """
+    Lista todas as faces armazenadas com paginação.
+
+    Args:
+        page: Número da página (padrão: 1, mínimo: 1)
+        size: Resultados por página (padrão: 10, min: 1, max: 100)
+
+    Returns:
+        dict: {
+            "total": Total de faces armazenadas,
+            "page": Página atual,
+            "size": Tamanho da página,
+            "total_pages": Total de páginas,
+            "faces": Lista de faces com id, person_id, name e created_at
+        }
+
+    Raises:
+        HTTPException: Se houver erro ao buscar faces no Elasticsearch
+    """
     """List all stored faces with pagination"""
     try:
         from_index = (page - 1) * size
@@ -218,7 +284,16 @@ async def list_faces(
 
 
 @app.get("/health")
-async def health_check():
+async def health_check() -> Dict[str, str]:
+    """
+    Verifica a saúde da API e conexão com Elasticsearch.
+
+    Returns:
+        dict: {
+            "status": "healthy",
+            "elasticsearch": "connected" ou "disconnected"
+        }
+    """
     es_status = es.ping()
     logger.info(f"Health check — Elasticsearch: {'OK' if es_status else 'DOWN'}")
     return {
@@ -228,7 +303,13 @@ async def health_check():
 
 
 @app.get("/")
-async def root():
+async def root() -> Dict[str, Any]:
+    """
+    Endpoint raiz com informações sobre a API.
+
+    Returns:
+        dict: Mensagem de boas-vindas e lista de endpoints disponíveis
+    """
     return {
         "message": "Face Recognition API",
         "endpoints": {
